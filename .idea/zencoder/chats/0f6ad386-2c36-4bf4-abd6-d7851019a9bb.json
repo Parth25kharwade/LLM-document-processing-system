@@ -1,0 +1,121 @@
+{
+    "checksum": "bf35d3ccf18f404875b5a115569efe1026ddd98d7aef9360c453b8d780c64c21",
+    "data": {
+    "id": "0f6ad386-2c36-4bf4-abd6-d7851019a9bb",
+    "createdAt": 1754458597125,
+    "updatedAt": 1754458659398,
+    "title": "C:\\Users\\TUF F15\\Desktop\\hackRx\\hackRx\\src\\main...",
+    "messages": [
+        {
+            "id": "1b663dfb-bb78-4daf-b639-7188c71c60f3",
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "C:\\Users\\TUF F15\\Desktop\\hackRx\\hackRx\\src\\main\\java\\com\\parth\\hackRx\\service\\impl\\QueryProcessingServiceImpl.java:77:59"
+                },
+                {
+                    "type": "text",
+                    "text": "java: cannot find symbol"
+                },
+                {
+                    "type": "text",
+                    "text": "  symbol:   method getEmbedding()"
+                },
+                {
+                    "type": "text",
+                    "text": "  location: variable chunk of type java.lang.Object"
+                }
+            ],
+            "context": {
+                "currentFile": {
+                    "path": "hackRx/src/main/java/com/parth/hackRx/service/impl/QueryProcessingServiceImpl.java",
+                    "fsPath": "C:/Users/TUF F15/Desktop/hackRx/hackRx/src/main/java/com/parth/hackRx/service/impl/QueryProcessingServiceImpl.java",
+                    "sources": [
+                        "opened_tab"
+                    ],
+                    "content": "package com.parth.hackRx.service.impl;\n\nimport com.fasterxml.jackson.core.JsonProcessingException;\nimport com.fasterxml.jackson.databind.ObjectMapper;\nimport com.google.cloud.vertexai.VertexAI;\nimport com.google.cloud.vertexai.api.GenerateContentResponse;\nimport com.google.cloud.vertexai.generativeai.GenerativeModel;\nimport com.parth.hackRx.dto.QueryRequest;\nimport com.parth.hackRx.dto.QueryResponse;\nimport com.parth.hackRx.model.DocumentChunk;\nimport com.parth.hackRx.repository.DocumentChunkRepository;\nimport com.parth.hackRx.service.QueryProcessingService;\nimport org.slf4j.Logger;\nimport org.slf4j.LoggerFactory;\nimport org.springframework.ai.embedding.EmbeddingModel;\nimport org.springframework.ai.embedding.EmbeddingRequest;\nimport org.springframework.ai.embedding.EmbeddingResponse;\nimport org.springframework.beans.factory.annotation.Value;\nimport org.springframework.stereotype.Service;\n\nimport java.io.IOException;\nimport java.util.Comparator;\nimport java.util.List;\nimport java.util.stream.Collectors;\n\n@Service\npublic class QueryProcessingServiceImpl implements QueryProcessingService {\n\n    private static final Logger logger = LoggerFactory.getLogger(QueryProcessingServiceImpl.class);\n    private static final int MAX_RELEVANT_CHUNKS = 5;\n\n    private final DocumentChunkRepository documentChunkRepository;\n    private final VertexAI vertexAI;\n    private final String modelName;\n    private final ObjectMapper objectMapper;\n    private final EmbeddingModel embeddingModel;\n\n    @Value(\"${google.cloud.vertexai.project-id}\")\n    private String projectId;\n\n    @Value(\"${google.cloud.vertexai.location}\")\n    private String location;\n\n    public QueryProcessingServiceImpl(DocumentChunkRepository documentChunkRepository,\n                                      VertexAI vertexAI,\n                                      @Value(\"${google.cloud.vertexai.model}\") String modelName,\n                                      ObjectMapper objectMapper,\n                                      EmbeddingModel embeddingModel) {\n        this.documentChunkRepository = documentChunkRepository;\n        this.vertexAI = vertexAI;\n        this.modelName = modelName;\n        this.objectMapper = objectMapper;\n        this.embeddingModel = embeddingModel;\n    }\n\n    @Override\n    public QueryResponse processQuery(QueryRequest request) {\n        try {\n            byte[] queryEmbedding = generateEmbedding(request.getQuery());\n\n            List<DocumentChunk> relevantChunks = findMostRelevantChunks(queryEmbedding);\n            String context = buildContext(relevantChunks);\n\n            String prompt = buildPrompt(request.getQuery(), context, request.getLanguage());\n            String llmResponse = generateResponse(prompt);\n\n            return parseGeminiResponse(llmResponse, relevantChunks);\n        } catch (IOException e) {\n            logger.error(\"Failed to process query: {}\", request.getQuery(), e);\n            return buildErrorResponse(\"Processing failed due to an internal error\");\n        }\n    }\n\n    private List<DocumentChunk> findMostRelevantChunks(byte[] queryEmbedding) {\n        return documentChunkRepository.findAll().stream()\n                .sorted(Comparator.comparingDouble(\n                        chunk -> calculateSimilarity(chunk.getEmbedding(), queryEmbedding)\n                ).reversed())\n                .limit(MAX_RELEVANT_CHUNKS)\n                .collect(Collectors.toList());\n    }\n\n    private double calculateSimilarity(byte[] embedding1, byte[] embedding2) {\n        if (embedding1 == null || embedding2 == null || embedding1.length != embedding2.length) {\n            return 0.0;\n        }\n        \n        // Convert byte arrays back to float arrays\n        float[] vector1 = byteArrayToFloatArray(embedding1);\n        float[] vector2 = byteArrayToFloatArray(embedding2);\n        \n        // Calculate cosine similarity\n        return cosineSimilarity(vector1, vector2);\n    }\n    \n    private float[] byteArrayToFloatArray(byte[] bytes) {\n        float[] floats = new float[bytes.length / 4];\n        for (int i = 0; i < floats.length; i++) {\n            int bits = (bytes[i * 4] & 0xff) |\n                      ((bytes[i * 4 + 1] & 0xff) << 8) |\n                      ((bytes[i * 4 + 2] & 0xff) << 16) |\n                      ((bytes[i * 4 + 3] & 0xff) << 24);\n            floats[i] = Float.intBitsToFloat(bits);\n        }\n        return floats;\n    }\n    \n    private double cosineSimilarity(float[] vectorA, float[] vectorB) {\n        double dotProduct = 0.0;\n        double normA = 0.0;\n        double normB = 0.0;\n        \n        for (int i = 0; i < vectorA.length; i++) {\n            dotProduct += vectorA[i] * vectorB[i];\n            normA += Math.pow(vectorA[i], 2);\n            normB += Math.pow(vectorB[i], 2);\n        }\n        \n        if (normA == 0.0 || normB == 0.0) {\n            return 0.0;\n        }\n        \n        return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));\n    }\n\n    private String buildContext(List<DocumentChunk> chunks) {\n        return chunks.stream()\n                .map(chunk -> String.format(\"\"\"\n                        [Document: %s, Section: %s]\n                        %s\n                        \"\"\",\n                        chunk.getDocument().getFileName(),\n                        chunk.getChunkIndex(),\n                        chunk.getText()))\n                .collect(Collectors.joining(\"\\n\"));\n    }\n\n    private String buildPrompt(String query, String context, String language) {\n        String jsonTemplate = \"\"\"\n                {\n                    \"decision\": \"approved|rejected|needs_review\",\n                    \"amount\": 0.0,\n                    \"justification\": \"string\",\n                    \"clauses\": [\n                        {\n                            \"section\": \"string\",\n                            \"text\": \"string\",\n                            \"relevanceScore\": 0.0\n                        }\n                    ]\n                }\"\"\";\n\n        if (\"hi\".equals(language)) {\n            return String.format(\"\"\"\n                    निम्नलिखित बीमा पॉलिसी संदर्भ का विश्लेषण करें और प्रश्न का उत्तर दें।\n                    संदर्भ: %s\n                    प्रश्न: %s\n                    \n                    निम्नलिखित JSON प्रारूप में उत्तर दें:\n                    %s\n                    \"\"\", context, query, jsonTemplate);\n        }\n\n        return String.format(\"\"\"\n                Analyze the following insurance policy context and answer the question.\n                Context: %s\n                Question: %s\n                \n                Respond in exactly this JSON format:\n                %s\n                \"\"\", context, query, jsonTemplate);\n    }\n\n    private String generateResponse(String prompt) throws IOException {\n        try {\n            GenerativeModel model = new GenerativeModel(modelName, vertexAI);\n            GenerateContentResponse response = model.generateContent(prompt);\n\n            return response.getCandidatesList().stream()\n                    .findFirst()\n                    .flatMap(candidate -> candidate.getContent().getPartsList().stream()\n                            .findFirst()\n                            .map(part -> part.getText()))\n                    .orElseThrow(() -> new IOException(\"Empty response from Gemini API\"));\n        } catch (Exception e) {\n            logger.error(\"Failed to generate response from Gemini\", e);\n            throw new IOException(\"Failed to get response from Gemini API\", e);\n        }\n    }\n\n    private QueryResponse parseGeminiResponse(String llmResponse, List<DocumentChunk> relevantChunks) {\n        try {\n            QueryResponse response = objectMapper.readValue(llmResponse, QueryResponse.class);\n\n            // Enhance response with document references\n            if (response.getClauses() != null) {\n                response.getClauses().forEach(clause -> {\n                    relevantChunks.stream()\n                            .filter(chunk -> chunk.getText().contains(clause.getSection()))\n                            .findFirst()\n                            .ifPresent(chunk -> {\n                                clause.setDocumentId(chunk.getDocument().getId());\n                                clause.setPageRange(chunk.getStartPage() + \"-\" + chunk.getEndPage());\n                            });\n                });\n            }\n\n            return response;\n        } catch (JsonProcessingException e) {\n            logger.error(\"Failed to parse Gemini response: {}\", llmResponse, e);\n            return buildErrorResponse(\"Failed to parse AI response\");\n        }\n    }\n\n    private QueryResponse buildErrorResponse(String message) {\n        QueryResponse response = new QueryResponse();\n        response.setDecision(\"error\");\n        response.setJustification(message);\n        return response;\n    }\n\n    private byte[] generateEmbedding(String text) throws IOException {\n        try {\n            EmbeddingRequest request = new EmbeddingRequest(List.of(text), null);\n            EmbeddingResponse response = embeddingModel.call(request);\n            \n            if (response.getResults().isEmpty()) {\n                throw new IOException(\"No embedding generated for text\");\n            }\n            \n            // Convert float array to byte array\n            float[] embedding = response.getResults().get(0).getOutput();\n            return floatArrayToByteArray(embedding);\n        } catch (Exception e) {\n            logger.error(\"Failed to generate embedding for text: {}\", text, e);\n            throw new IOException(\"Embedding generation failed\", e);\n        }\n    }\n    \n    private byte[] floatArrayToByteArray(float[] floats) {\n        byte[] bytes = new byte[floats.length * 4];\n        for (int i = 0; i < floats.length; i++) {\n            int bits = Float.floatToIntBits(floats[i]);\n            bytes[i * 4] = (byte) (bits & 0xff);\n            bytes[i * 4 + 1] = (byte) ((bits >> 8) & 0xff);\n            bytes[i * 4 + 2] = (byte) ((bits >> 16) & 0xff);\n            bytes[i * 4 + 3] = (byte) ((bits >> 24) & 0xff);\n        }\n        return bytes;\n    }\n}",
+                    "language": "java"
+                },
+                "codebaseEnabled": false
+            },
+            "createdAt": 1754458597150,
+            "isInternal": false,
+            "rawContent": {
+                "type": "doc",
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "C:\\Users\\TUF F15\\Desktop\\hackRx\\hackRx\\src\\main\\java\\com\\parth\\hackRx\\service\\impl\\QueryProcessingServiceImpl.java:77:59"
+                            }
+                        ]
+                    },
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "java: cannot find symbol"
+                            }
+                        ]
+                    },
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "  symbol:   method getEmbedding()"
+                            }
+                        ]
+                    },
+                    {
+                        "type": "paragraph",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "  location: variable chunk of type java.lang.Object"
+                            }
+                        ]
+                    }
+                ]
+            },
+            "autoAppliedRules": []
+        },
+        {
+            "id": "a8bf5fd2-7a12-494e-9cfd-c389a247b67e",
+            "role": "system",
+            "content": [
+                {
+                    "type": "errorText",
+                    "text": "Rate limit exceeded. You can try again on August 07 at 10:51.",
+                    "actions": [
+                        {
+                            "type": "upgradePlan",
+                            "waitSeconds": 85452
+                        },
+                        {
+                            "type": "externalAction",
+                            "title": "Regenerate",
+                            "action": "regenerateLastAnswer"
+                        }
+                    ]
+                }
+            ],
+            "createdAt": 1754458659398,
+            "isInternal": false
+        }
+    ],
+    "isAgent": true,
+    "isCustomAgent": false,
+    "isUnitTestsAgent": false,
+    "isE2EAgent": false,
+    "isQnaAgent": false,
+    "isRepoInfoAgent": false,
+    "isClaudeCode": false,
+    "autoApply": true,
+    "model": "default"
+}
+}
